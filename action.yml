@@ -70,7 +70,7 @@ runs:
     - name: Cache Oniro emulator archive
       if: inputs.cache == 'true'
       id: cache_oniro_emulator
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: ~/.cache/oniro-emulator/${{ inputs.release }}
         key: ${{ runner.os }}-oniro-emulator-${{ inputs.release }}-${{ inputs.asset }}

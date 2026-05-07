@@ -69,7 +69,7 @@ step yourself when you want the log preserved on failure:
 ```yaml
 - name: Upload emulator log
   if: always()
-  uses: actions/upload-artifact@v4
+  uses: actions/upload-artifact@v7
   with:
     name: oniro-emulator-log
     path: /tmp/oniro-emulator.log
