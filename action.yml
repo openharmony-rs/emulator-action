@@ -157,4 +157,8 @@ runs:
           echo "Error: hdc could not connect to ${CONNECT_KEY} within ${HDC_WAIT_SECONDS}s." >&2
           exit 1
         fi
+        if ! timeout 10 hdc -t "$CONNECT_KEY" wait; then
+          echo "Error: hdc -t ${CONNECT_KEY} wait did not report a ready device within 10s." >&2
+          exit 1
+        fi
         hdc list targets
