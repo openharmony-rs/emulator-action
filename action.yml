@@ -1,0 +1,160 @@
+name: 'Start Oniro Emulator'
+description: 'Boot the Oniro QEMU emulator on Linux runners and wait for an hdc target.'
+branding:
+  icon: 'cpu'
+  color: 'blue'
+
+inputs:
+  release:
+    description: 'Oniro emulator release tag from eclipse-oniro4openharmony/device_board_oniro.'
+    required: false
+    default: 'v6.1'
+  asset:
+    description: 'Release asset filename to download.'
+    required: false
+    default: 'oniro_emulator.zip'
+  connect-key:
+    description: 'host:port that the emulator will be reachable on via hdc.'
+    required: false
+    default: '127.0.0.1:55555'
+  cache:
+    description: 'Cache the downloaded emulator archive between runs.'
+    required: false
+    default: 'true'
+  log-path:
+    description: 'Where to redirect the emulator stdout/stderr.'
+    required: false
+    default: '/tmp/oniro-emulator.log'
+  port-wait-seconds:
+    description: 'Seconds to wait for the hostfwd port to become reachable.'
+    required: false
+    default: '120'
+  hdc-wait-seconds:
+    description: 'Seconds to wait for hdc to connect after the port is reachable.'
+    required: false
+    default: '120'
+  accel:
+    description: 'QEMU acceleration: auto|kvm|hvf|tcg. CI runners typically lack KVM, so the default falls back to TCG automatically.'
+    required: false
+    default: 'auto'
+  audio:
+    description: 'Audio configuration: auto|none|<qemu audiodev backend>. Defaults to none for CI to avoid missing-backend failures.'
+    required: false
+    default: 'none'
+  smp:
+    description: 'Number of guest vCPUs.'
+    required: false
+    default: '4'
+  memory:
+    description: 'Guest memory size (qemu syntax).'
+    required: false
+    default: '4096M'
+
+outputs:
+  log-path:
+    description: 'Path to the emulator log.'
+    value: ${{ inputs.log-path }}
+  connect-key:
+    description: 'host:port the emulator is reachable on.'
+    value: ${{ inputs.connect-key }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install host dependencies
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y qemu-system-x86 unzip netcat-openbsd
+
+    - name: Cache Oniro emulator archive
+      if: inputs.cache == 'true'
+      id: cache_oniro_emulator
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/oniro-emulator/${{ inputs.release }}
+        key: ${{ runner.os }}-oniro-emulator-${{ inputs.release }}-${{ inputs.asset }}
+
+    - name: Download Oniro emulator archive
+      if: inputs.cache != 'true' || steps.cache_oniro_emulator.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        ONIRO_EMULATOR_RELEASE: ${{ inputs.release }}
+        ONIRO_EMULATOR_ASSET: ${{ inputs.asset }}
+      run: |
+        mkdir -p "$HOME/.cache/oniro-emulator/${ONIRO_EMULATOR_RELEASE}"
+        curl -fL \
+          "https://github.com/eclipse-oniro4openharmony/device_board_oniro/releases/download/${ONIRO_EMULATOR_RELEASE}/${ONIRO_EMULATOR_ASSET}" \
+          -o "$HOME/.cache/oniro-emulator/${ONIRO_EMULATOR_RELEASE}/${ONIRO_EMULATOR_ASSET}"
+
+    - name: Extract and start emulator
+      shell: bash
+      env:
+        ONIRO_EMULATOR_RELEASE: ${{ inputs.release }}
+        ONIRO_EMULATOR_ASSET: ${{ inputs.asset }}
+        ONIRO_EMULATOR_ACCEL: ${{ inputs.accel }}
+        ONIRO_EMULATOR_AUDIO: ${{ inputs.audio }}
+        ONIRO_EMULATOR_SMP: ${{ inputs.smp }}
+        ONIRO_EMULATOR_MEMORY: ${{ inputs.memory }}
+        CONNECT_KEY: ${{ inputs.connect-key }}
+        LOG_PATH: ${{ inputs.log-path }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        rm -rf /tmp/oniro-emulator
+        mkdir -p /tmp/oniro-emulator
+        unzip -q \
+          "$HOME/.cache/oniro-emulator/${ONIRO_EMULATOR_RELEASE}/${ONIRO_EMULATOR_ASSET}" \
+          -d /tmp/oniro-emulator
+        RUN_SH="$(find /tmp/oniro-emulator -name run.sh -print -quit)"
+        if [ -z "$RUN_SH" ]; then
+          echo "Error: could not locate run.sh in the extracted emulator archive" >&2
+          exit 1
+        fi
+        EMU_DIR="$(dirname "$RUN_SH")"
+        nohup env \
+          ONIRO_EMULATOR_ACCEL="$ONIRO_EMULATOR_ACCEL" \
+          ONIRO_EMULATOR_AUDIO="$ONIRO_EMULATOR_AUDIO" \
+          ONIRO_EMULATOR_SMP="$ONIRO_EMULATOR_SMP" \
+          ONIRO_EMULATOR_MEMORY="$ONIRO_EMULATOR_MEMORY" \
+          bash "${ACTION_PATH}/scripts/oniro-emulator-run.sh" "$EMU_DIR" "$CONNECT_KEY" \
+          >"$LOG_PATH" 2>&1 &
+
+    - name: Wait for hdc target
+      shell: bash
+      env:
+        CONNECT_KEY: ${{ inputs.connect-key }}
+        PORT_WAIT_SECONDS: ${{ inputs.port-wait-seconds }}
+        HDC_WAIT_SECONDS: ${{ inputs.hdc-wait-seconds }}
+      run: |
+        if ! command -v hdc >/dev/null 2>&1; then
+          echo "Error: hdc was not found on PATH. Run openharmony-rs/setup-ohos-sdk (or otherwise install hdc) before this action." >&2
+          exit 1
+        fi
+        host="${CONNECT_KEY%:*}"
+        port="${CONNECT_KEY##*:}"
+        port_ready=0
+        for _ in $(seq 1 "$PORT_WAIT_SECONDS"); do
+          if nc -z "$host" "$port"; then
+            port_ready=1
+            break
+          fi
+          sleep 1
+        done
+        if [ "$port_ready" -ne 1 ]; then
+          echo "Error: emulator hostfwd port ${CONNECT_KEY} did not become reachable in ${PORT_WAIT_SECONDS}s." >&2
+          exit 1
+        fi
+        target_ready=0
+        for _ in $(seq 1 "$HDC_WAIT_SECONDS"); do
+          tconn_output="$(hdc tconn "$CONNECT_KEY" 2>&1 || true)"
+          if printf '%s\n' "$tconn_output" | grep -q -e "Connect OK" -e "Target is connected"; then
+            target_ready=1
+            break
+          fi
+          sleep 1
+        done
+        if [ "$target_ready" -ne 1 ]; then
+          echo "Error: hdc could not connect to ${CONNECT_KEY} within ${HDC_WAIT_SECONDS}s." >&2
+          exit 1
+        fi
+        hdc list targets

@@ -1,0 +1,40 @@
+name: Test
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  smoke:
+    name: Smoke test (hdc shell echo hello-world)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup OpenHarmony SDK (provides hdc)
+        id: setup_sdk
+        uses: openharmony-rs/setup-ohos-sdk@v1.0.0
+        with:
+          version: 6.1
+
+      - name: Add OHOS toolchains to PATH
+        run: |
+          echo "$(dirname "${OHOS_SDK_NATIVE}")/toolchains" >> "$GITHUB_PATH"
+        env:
+          OHOS_SDK_NATIVE: ${{ steps.setup_sdk.outputs.ohos_sdk_native }}
+
+      - name: Start Oniro emulator
+        uses: ./
+
+      - name: hdc shell echo hello-world
+        run: |
+          output="$(hdc shell echo hello-world)"
+          printf 'hdc shell echo output: %s\n' "$output"
+          printf '%s' "$output" | grep -q hello-world
+
+      - name: Upload emulator log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oniro-emulator-log
+          path: /tmp/oniro-emulator.log
